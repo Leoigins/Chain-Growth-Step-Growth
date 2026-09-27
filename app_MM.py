@@ -4,7 +4,9 @@ Step vs Chain Growth Lab
 An interactive Streamlit tool that lets undergraduates *predict* each step of
   (1) PET step-growth polymerisation (terephthalic acid + ethylene glycol), and
   (2) styrene free-radical chain-growth polymerisation (AIBN initiator),
-then reveal an animated schematic + explanation. A final "mystery" challenge
+then reveal an animated schematic + explanation.
+Version 2: each route has a 10-question bank (5 learning-order slots x 2).
+Every attempt draws one question per slot and shuffles the answer options. A final "mystery" challenge
 asks students to classify two unlabelled processes from mechanistic evidence.
 
 Run:  pip install streamlit pandas altair
@@ -34,10 +36,13 @@ COL = {
     "G1": "#9ca3af",  # mystery unit, light grey
     "G2": "#4b5563",  # mystery unit, dark grey
     "G3": "#6b7280",  # mystery unit, mid grey
+    "B": "#64748b",   # benzoyl end-cap (monofunctional acid)
+    "X": "#cbd5e1",   # solvent molecule (chain transfer)
+    "N": "#0d9488",   # TEMPO nitroxide
 }
-LBL = {"T": "T", "E": "E", "S": "S", "M": "St", "I": "I",
+LBL = {"T": "T", "E": "E", "S": "S", "M": "St", "I": "I", "B": "Bz", "X": "Sol", "N": "NO",
        "G1": "", "G2": "", "G3": ""}
-TXT = {"M": "#14532d"}
+TXT = {"M": "#14532d", "X": "#0f172a"}
 
 BASE_CSS = """
 <style>
@@ -192,6 +197,9 @@ def anim_html(spec, nonce=0, W=720, H=140):
         p1, p2 = spec["products"]
         _, wa = species_svg(a, 0, y)
         _, w1 = species_svg(p1, 0, y)
+        _, w2 = species_svg(p2, 0, y)
+        m1 = max(0, min(150, W / 2 - 16 - w1 - 10))      # keep products inside the frame
+        m2 = max(0, min(150, W / 2 - 16 - w2 - 10))
         s_a, _ = species_svg(a, (W - wa) / 2, y)
         s1, _ = species_svg(p1, W / 2 - 16 - w1, y)
         s2, _ = species_svg(p2, W / 2 + 16, y)
@@ -199,9 +207,9 @@ def anim_html(spec, nonce=0, W=720, H=140):
         body.append(f'<circle class="flash" cx="{W / 2}" cy="{y}" r="20" fill="#fde047"/>')
         kf("ma", "0%{opacity:1}38%{opacity:1}48%{opacity:0}100%{opacity:0}")
         kf("mp1", "0%{opacity:0;transform:translateX(0)}45%{opacity:0;transform:translateX(0)}"
-                  "55%{opacity:1}100%{opacity:1;transform:translateX(-150px)}")
+                  f"55%{{opacity:1}}100%{{opacity:1;transform:translateX(-{m1}px)}}")
         kf("mp2", "0%{opacity:0;transform:translateX(0)}45%{opacity:0;transform:translateX(0)}"
-                  "55%{opacity:1}100%{opacity:1;transform:translateX(150px)}")
+                  f"55%{{opacity:1}}100%{{opacity:1;transform:translateX({m2}px)}}")
         css.append(f".ra{{animation:ma {dur}s forwards}}.p1{{animation:mp1 {dur}s ease-out forwards}}"
                    f".p2{{animation:mp2 {dur}s ease-out forwards}}")
 
@@ -230,41 +238,68 @@ def anim_html(spec, nonce=0, W=720, H=140):
             f'border-radius:10px;margin:4px 8px">{body_s}</svg>{cap}')
 
 
+
+
 # =============================================================================
 # 2. Species builders
 # =============================================================================
+_LEFT = {"T": "HOOC", "E": "HO", "B": "Ph–"}
+_RIGHT = {"T": "COOH", "E": "OH", "B": "–Ph"}
+
+
 def step(units):
-    """PET species: T = terephthaloyl, E = ethylene-glycol unit."""
+    """PET species: T = terephthaloyl, E = ethylene-glycol unit,
+    B = benzoyl end-cap (from a monofunctional acid impurity)."""
     units = list(units)
-    return {"units": units,
-            "left": "HOOC" if units[0] == "T" else "HO",
-            "right": "COOH" if units[-1] == "T" else "OH"}
+    return {"units": units, "left": _LEFT[units[0]], "right": _RIGHT[units[-1]]}
 
 
 TPA, EG = step("T"), step("E")
+BZA = {"units": ["B"], "left": "Ph–", "right": "COOH", "tag": "benzoic acid"}
 STY = {"units": ["M"], "tag": "CH₂=CH–Ph"}
 AIBN = {"units": ["I", "I"], "link": "–N=N–", "tag": "AIBN"}
+BPO = {"units": ["I", "I"], "link": "–O–O–", "tag": "benzoyl peroxide"}
 I_RAD = {"units": ["I"], "right": "•"}
+SOLV = {"units": ["X"], "tag": "H–Sol"}
+SOL_RAD = {"units": ["X"], "right": "•"}
+TEMPO = {"units": ["N"], "left": "•", "tag": "TEMPO"}
 
 
-def pchain(n, active=True, flip=False):
+def pchain(n, active=True, flip=False, end_h=False):
     """Polystyrene chain: initiator fragment + n styrene units (+ radical end)."""
     u = ["I"] + ["S"] * n
     if flip:
         return {"units": u[::-1], "left": "•" if active else ""}
-    return {"units": u, "right": "•" if active else ""}
+    return {"units": u, "right": "•" if active else ("H" if end_h else "")}
 
 
 def dead(n):  # combination product: I-(S)n-I
     return {"units": ["I"] + ["S"] * n + ["I"]}
 
 
+def dormant(n):  # chain capped by TEMPO (NMP)
+    return {"units": ["I"] + ["S"] * n + ["N"], "tag": "dormant (C–O–N)"}
+
+
 # =============================================================================
-# 3. Round content
+# 3. Question bank
+#    Each route has 10 questions spread over 5 "slots" that follow the logic of
+#    the mechanism (slot 1 → 5). Every attempt draws ONE question per slot, so
+#    the 5-question sequence always follows the same learning order but the
+#    individual questions differ between attempts.
 # =============================================================================
-PET_ROUNDS = [
+SLOT_NAMES = {
+    "pet": {1: "Starting the reaction", 2: "Who can react with whom?", 3: "Conversion and chain length",
+            4: "Driving to high molar mass", 5: "Stoichiometry and distribution"},
+    "sty": {1: "Initiation", 2: "Adding monomer (propagation)", 3: "Who can react with whom?",
+            4: "Chain length vs conversion", 5: "Ending (or controlling) the chain"},
+}
+
+PET_BANK = [
+    # ---------------- slot 1 · starting the reaction ----------------
     dict(
-        title="Round 1 · What starts the reaction?",
+        id="P1a", slot=1,
+        title="What starts the reaction?",
         context=("The reactor contains only **terephthalic acid** (HOOC–C₆H₄–COOH, bead **T**) and "
                  "**ethylene glycol** (HO–CH₂CH₂–OH, bead **E**) at ~250 °C. Each monomer carries "
                  "**two** functional groups."),
@@ -276,10 +311,11 @@ PET_ROUNDS = [
                  "An initiator radical must first attack EG",
                  "EG + EG join to start the chain"],
         answer=0,
-        explain=("**Esterification**: a COOH group reacts with an OH group, releasing water. "
-                 "No initiator is needed; the functional groups themselves are the reactive sites. "
-                 "Acid + acid cannot form an ester. *Nuance:* EG + EG can form a diethylene glycol "
-                 "(ether) side product at ~1–2 %, which is a defect, not the chain-building step."),
+        explain=("**Esterification**: a COOH group reacts with an OH group, releasing water. This is a "
+                 "**polycondensation**: n AA + n BB ⇌ [–AA–BB–]ₙ + (2n − 1) H₂O. No initiator is needed; "
+                 "the functional groups themselves are the reactive sites. Acid + acid cannot form an ester. "
+                 "*Nuance:* EG + EG can form a diethylene glycol (ether) side product at ~1–2 %, which is a "
+                 "defect, not the chain-building step."),
         anims=[
             dict(kind="combine", reactants=[TPA, EG], product=step("TE"), byproduct="H₂O",
                  caption="COOH + HO → ester. The dimer still has one COOH and one OH end, so it can keep reacting."),
@@ -287,7 +323,34 @@ PET_ROUNDS = [
                  caption="COOH + COOH: no complementary partner, so no ester forms."),
         ]),
     dict(
-        title="Round 2 · Who can react with whom?",
+        id="P1b", slot=1,
+        title="Why does functionality matter?",
+        context=("A batch of TPA is contaminated with a little **benzoic acid** (Ph–COOH, bead **Bz**), "
+                 "which has only **one** COOH group."),
+        pot=[(TPA, 5), (EG, 6), (BZA, 1)],
+        type="single",
+        question="What does the benzoic acid do to the polymerisation?",
+        options=["It caps a chain end: that end can never react again, so it limits the chain length",
+                 "Nothing: it simply reacts like TPA and is built into the backbone",
+                 "It acts as an initiator and speeds up growth",
+                 "It cross-links the chains into a network"],
+        answer=0,
+        explain=("Step growth only produces long chains when **every monomer is (at least) difunctional**, "
+                 "so that each product still carries two reactive ends. A monofunctional reagent reacts once and "
+                 "leaves a non-reactive Ph– end: it is a **chain stopper** (end-capper). Like any stoichiometric "
+                 "imbalance, it lowers the maximum Xₙ. (A tri-functional monomer would do the opposite and "
+                 "give branching or a network.)"),
+        anims=[
+            dict(kind="combine", reactants=[BZA, EG], product=step("BE"), byproduct="H₂O",
+                 caption="Ph–COOH + HO–E–OH → Ph–CO–O–E–OH. The left end is now permanently unreactive."),
+            dict(kind="combine", reactants=[step("BE"), {"units": ["B"], "left": "HOOC", "right": "–Ph"}], product=step("BEB"), byproduct="H₂O",
+                 caption="If both ends meet a chain stopper, the molecule is dead: it has no functional group left."),
+        ]),
+
+    # ---------------- slot 2 · who can react ----------------
+    dict(
+        id="P2a", slot=2,
+        title="Who can react with whom?",
         context="A few minutes later the pot holds monomers **and** a new dimer HOOC–T–E–OH.",
         pot=[(TPA, 3), (EG, 3), (step("TE"), 3)],
         type="multi",
@@ -295,18 +358,44 @@ PET_ROUNDS = [
         options=["Dimer + EG", "Dimer + TPA", "Dimer + Dimer", "TPA + EG",
                  "TPA + TPA", "EG + EG (backbone ester)"],
         answer={0, 1, 2, 3},
-        explain=("**Any** molecule with a COOH end can react with **any** molecule with an OH end, "
-                 "whatever its size. Flory's *equal-reactivity principle*: the reactivity of an end group "
-                 "is essentially independent of chain length. There is no special 'active centre'. "
+        explain=("**Any** molecule with a COOH end can react with **any** molecule with an OH end, whatever "
+                 "its size: A + B → AB, AB + A → ABA, AB + AB → ABAB… There is no special 'active centre'. "
                  "This is the defining feature of **step growth**."),
         anims=[
             dict(kind="combine", reactants=[step("TE"), step("TE")], product=step("TETE"), byproduct="H₂O",
                  caption="Oligomer + oligomer: two dimers couple into a tetramer in one step."),
-            dict(kind="combine", reactants=[step("TE"), EG], product=step("ETE"), byproduct="H₂O",
-                 caption="Dimer + monomer works just as well: the COOH end meets EG."),
+            dict(kind="combine", reactants=[EG, step("TE")], product=step("ETE"), byproduct="H₂O",
+                 caption="Monomer + dimer works just as well: EG meets the dimer's COOH end."),
         ]),
     dict(
-        title="Round 3 · How long are the chains halfway through?",
+        id="P2b", slot=2,
+        title="Does chain size change reactivity?",
+        context=("A tetramer HOOC–(T–E)₂–OH can meet either a small EG molecule or another tetramer. "
+                 "Assume the melt is well mixed."),
+        pot=[(step("TETE"), 3), (EG, 3), (TPA, 1)],
+        type="single",
+        question="How does the rate constant per functional group compare in the two cases?",
+        options=["About the same: an end group's reactivity does not depend on chain length",
+                 "Tetramer + tetramer is far slower because big molecules are unreactive",
+                 "Tetramer + EG cannot happen: monomers only react with monomers",
+                 "Tetramer + tetramer is far faster because the chains are already activated"],
+        answer=0,
+        explain=("This is Flory's **equal-reactivity principle**, the assumption behind the Carothers "
+                 "kinetics: every COOH has the same rate constant with every OH, whether it sits on a monomer "
+                 "or a long chain. That is why the rate law is written simply as "
+                 "−d[COOH]/dt = k[COOH][OH][H⁺], without any dependence on chain length. (It breaks down only "
+                 "when the melt becomes so viscous that diffusion limits the reaction.)"),
+        anims=[
+            dict(kind="combine", reactants=[EG, step("TETE")], product=step("ETETE"), byproduct="H₂O",
+                 caption="Tetramer + monomer: same COOH + OH chemistry."),
+            dict(kind="combine", reactants=[step("TETE"), step("TETE")], product=step("TETETETE"), byproduct="H₂O",
+                 caption="Tetramer + tetramer: same chemistry, same k, but chain length doubles in one step."),
+        ]),
+
+    # ---------------- slot 3 · conversion and chain length ----------------
+    dict(
+        id="P3a", slot=3,
+        title="How long are the chains halfway through?",
         context=("Half of all COOH groups have now reacted (extent of reaction **p = 0.50**). "
                  "Almost no free monomer remains, but look at the chain lengths."),
         pot=[(TPA, 1), (EG, 1), (step("TE"), 3), (step("ETE"), 2), (step("TET"), 2), (step("TETE"), 1)],
@@ -314,15 +403,38 @@ PET_ROUNDS = [
         question="What is the number-average degree of polymerisation, Xₙ?",
         options=["Xₙ = 2", "Xₙ ≈ 50", "Xₙ ≈ 100", "Xₙ ≈ 1.5"],
         answer=0,
-        explain=("**Carothers equation**: Xₙ = 1 / (1 − p) = 1 / 0.5 = **2**. "
-                 "Monomer is used up early, yet the chains are still short. Long chains only appear "
-                 "at the very end, when oligomers join together. p = 0.90 gives Xₙ = 10; p = 0.99 gives Xₙ = 100."),
+        explain=("**Carothers equation**: Xₙ = 1 / (1 − p) = 1 / 0.5 = **2**. Monomer is used up early, yet the "
+                 "chains are still short. Long chains only appear at the very end, when oligomers join together. "
+                 "p = 0.90 gives Xₙ = 10; p = 0.99 gives Xₙ = 100."),
         anims=[
             dict(kind="combine", reactants=[step("TETE"), step("TETE")], product=step("TETETETE"),
                  byproduct="H₂O", caption="Late-stage growth: chain length doubles when two oligomers join."),
         ]),
     dict(
-        title="Round 4 · Making bottle-grade PET",
+        id="P3b", slot=3,
+        title="Counting molecules",
+        context=("You start with **16 monomer molecules** (8 TPA + 8 EG). Later you count only **4 molecules** "
+                 "in the pot. Every ester bond joins two molecules into one."),
+        pot=[(step("TETE"), 1), (step("ETETE"), 1), (step("TET"), 1), (step("TE"), 1)],
+        type="single",
+        question="What are the conversion p and Xₙ now?",
+        options=["p = 0.75 and Xₙ = 4",
+                 "p = 0.25 and Xₙ = 1.3",
+                 "p = 0.75 and Xₙ = 16",
+                 "p = 0.50 and Xₙ = 2"],
+        answer=0,
+        explain=("Each reaction removes one molecule, so bonds formed = N₀ − Nₜ = 16 − 4 = 12, and "
+                 "p = (N₀ − Nₜ)/N₀ = 12/16 = **0.75**. Then Xₙ = N₀/Nₜ = 16/4 = **4**, which matches "
+                 "1/(1 − p) = 1/0.25 = 4. To convert to molar mass use Mₙ = M_RU × Xₙ."),
+        anims=[
+            dict(kind="combine", reactants=[step("TETE"), step("TE")], product=step("TETETE"), byproduct="H₂O",
+                 caption="One more bond → one fewer molecule: Nₜ drops from 4 to 3 and Xₙ rises to 16/3 ≈ 5.3."),
+        ]),
+
+    # ---------------- slot 4 · driving to high molar mass ----------------
+    dict(
+        id="P4a", slot=4,
+        title="Making bottle-grade PET",
         context=("Bottle-grade PET needs Xₙ of roughly 100 or more. Industrially, a low-molar-mass "
                  "prepolymer with OH (glycol) ends is heated to ~280 °C under vacuum with an Sb catalyst "
                  "(melt polycondensation)."),
@@ -335,19 +447,41 @@ PET_ROUNDS = [
                  "Add more radical initiator",
                  "Cool the melt so chains stop breaking"],
         answer={0, 1, 2},
-        explain=("Esterification and transesterification are **equilibria**, so the small molecule must be "
-                 "removed (Le Chatelier) to push p → 1. High conversion is essential (Carothers), and any "
-                 "imbalance of functional groups caps the chain ends (see next round). There is no initiator "
-                 "in step growth. Cooling would freeze the melt and stop diffusion, not help growth. "
-                 "In the melt stage, a glycol OH end attacks an ester near another chain end and **releases EG**."),
+        explain=("Polycondensation turns 2 molecules into 2 molecules, so ΔS is small and the reaction is an "
+                 "**equilibrium**: the small molecule must be removed (Le Chatelier) to push p → 1. High "
+                 "conversion is essential (Carothers), and any imbalance of functional groups caps the chain "
+                 "ends. There is no initiator in step growth. In the melt stage, a glycol OH end attacks an ester "
+                 "near another chain end and **releases EG**."),
         anims=[
             dict(kind="combine", reactants=[step("ETE"), step("ETE")], product=step("ETETE"),
                  byproduct="HOCH₂CH₂OH ↑ (vacuum)",
                  caption="Transesterification: two glycol-ended chains join and expel ethylene glycol, which is pumped away."),
         ]),
     dict(
-        title="Round 5 · The cost of imbalance",
-        context="Suppose you weigh out a **1 mol % excess of EG**, so the ratio of groups is r = 0.99.",
+        id="P4b", slot=4,
+        title="Chain length vs time",
+        context=("The esterification is run with an added acid catalyst at constant [H⁺] and equal "
+                 "[COOH] = [OH]. From the lecture: 1/(1 − p) = c₀k′t + 1, with k′ = k[H⁺]. "
+                 "At t = 0, Xₙ = 1; after **1 h**, Xₙ = **11**."),
+        pot=[(step("TETE"), 2), (step("TETETE"), 1), (step("ETE"), 2)],
+        type="single",
+        question="What is Xₙ after 3 h (same conditions)?",
+        options=["Xₙ = 31", "Xₙ = 33", "Xₙ = 121", "Xₙ = 20"],
+        answer=0,
+        explain=("Xₙ = 1/(1 − p) = c₀k′t + 1, so Xₙ grows **linearly with time**. From 1 h: c₀k′ = 10 h⁻¹, "
+                 "so at 3 h Xₙ = 10 × 3 + 1 = **31** (not 3 × 11). The rate law behind it is second order in "
+                 "functional groups: −dc/dt = k[H⁺]c². Because high Xₙ needs p very close to 1, reaching "
+                 "Xₙ ≈ 100 takes about 10 h here."),
+        anims=[
+            dict(kind="combine", reactants=[step("TETE"), step("TETETE")], product=step("TETETETETE"),
+                 byproduct="H₂O", caption="Rate ∝ k[COOH][OH][H⁺]: each coupling uses one COOH and one OH."),
+        ]),
+
+    # ---------------- slot 5 · stoichiometry & distribution ----------------
+    dict(
+        id="P5a", slot=5,
+        title="The cost of imbalance",
+        context="Suppose you weigh out a **1 mol % excess of EG**, so the ratio of groups is r = N_COOH/N_OH = 0.99.",
         pot=[(TPA, 5), (EG, 5)],
         type="single",
         question="Even if every COOH reacts (p = 1), what is the maximum Xₙ?",
@@ -355,17 +489,39 @@ PET_ROUNDS = [
         answer=0,
         explain=("Modified Carothers: Xₙ = (1 + r) / (1 + r − 2rp). At p = 1: Xₙ = (1 + r)/(1 − r) = 1.99/0.01 "
                  "= **199**. Once all the COOH is consumed, every chain has OH at both ends and **no complementary "
-                 "partner is left**. This is why stoichiometry (or controlled removal of excess EG) matters so much "
-                 "in step growth, while it is irrelevant in chain growth."),
+                 "partner is left**. (Lecture example: r = 0.5 and p = 0.99 gives only Xₙ = 2.94, i.e. trimers.)"),
         anims=[
             dict(kind="bounce", allowed=False, reactants=[step("ETETE"), step("ETE")],
                  caption="OH end + OH end: both chains are 'capped' by the excess glycol, so growth stops."),
         ]),
+    dict(
+        id="P5b", slot=5,
+        title="How broad is the distribution?",
+        context=("A perfectly balanced PET synthesis is stopped at **p = 0.99**. "
+                 "From the lecture: Xw = (1 + p)/(1 − p) and dispersity Đ = Xw/Xₙ = 1 + p."),
+        pot=[(step("TE"), 1), (step("TETE"), 2), (step("TETETE"), 1), (step("TETETETE"), 1)],
+        type="single",
+        question="Which set of values is correct?",
+        options=["Xₙ = 100, Xw = 199, Đ ≈ 1.99",
+                 "Xₙ = 100, Xw = 100, Đ = 1.00",
+                 "Xₙ = 99, Xw = 199, Đ ≈ 2.0",
+                 "Xₙ = 100, Xw = 10 000, Đ = 100"],
+        answer=0,
+        explain=("Xₙ = 1/0.01 = **100**; Xw = 1.99/0.01 = **199**; Đ = 1 + p = **1.99**. The mixture starts "
+                 "monodisperse (all monomer, Đ = 1) and approaches **Đ = 2** at full conversion, because chains "
+                 "of every length keep coupling at random. Compare: a controlled/living chain growth can give "
+                 "Đ close to 1."),
+        anims=[
+            dict(kind="combine", reactants=[step("TE"), step("TETETE")], product=step("TETETETE"),
+                 byproduct="H₂O", caption="Random coupling of short and long chains broadens the distribution."),
+        ]),
 ]
 
-STY_ROUNDS = [
+STY_BANK = [
+    # ---------------- slot 1 · initiation ----------------
     dict(
-        title="Round 1 · What starts the reaction?",
+        id="S1a", slot=1,
+        title="What starts the reaction?",
         context=("The reactor contains **styrene** (CH₂=CH–Ph, bead **St**) and a small amount of "
                  "**AIBN** initiator at 70 °C."),
         pot=[(STY, 12), (AIBN, 1)],
@@ -376,19 +532,43 @@ STY_ROUNDS = [
                  "Styrene loses H₂O to form a double bond",
                  "A radical attacks polystyrene that is already present"],
         answer=0,
-        explain=("**Initiation part 1**: the weak C–N bonds of AIBN break homolytically (half-life ~10 h at 65 °C) "
-                 "to give two 2-cyano-2-propyl radicals and N₂ gas. Only a fraction *f* ≈ 0.5–0.7 of these "
-                 "radicals escape the solvent cage to start chains. Styrene monomers cannot link to each other "
-                 "without a reactive centre. *Nuance:* above ~100 °C styrene can self-initiate thermally, "
-                 "but at 70 °C with AIBN the initiator dominates."),
+        explain=("**Initiation part 1** (rate constant k_d): the C–N bonds of AIBN break homolytically on "
+                 "heating to give two 2-cyano-2-propyl radicals and N₂ gas. Only a fraction *f* ≈ 0.5–0.7 of "
+                 "these radicals escape the solvent cage to start chains. Styrene monomers cannot link to each "
+                 "other without a reactive centre. *Nuance:* above ~100 °C styrene can self-initiate thermally."),
         anims=[
             dict(kind="split", reactants=[AIBN], products=[I_RAD, I_RAD], byproduct="N₂ ↑",
-                 caption="Homolysis gives two primary radicals, the only species that can start chains."),
+                 caption="Homolysis gives two initiating radicals, the only species that can start chains."),
             dict(kind="bounce", allowed=False, reactants=[STY, STY],
                  caption="Monomer + monomer: no radical, no reaction."),
         ]),
     dict(
-        title="Round 2 · Where does the radical add?",
+        id="S1b", slot=1,
+        title="Choosing an initiator",
+        context="You want to polymerise styrene by a **free-radical** mechanism.",
+        pot=[(STY, 10), (BPO, 1)],
+        type="multi",
+        question="Select **every** compound that would work as a free-radical initiator.",
+        options=["AIBN (an azo compound)",
+                 "Benzoyl peroxide (BPO)",
+                 "Ethylene glycol",
+                 "H₂SO₄ / a Lewis acid such as SnCl₄",
+                 "Terephthalic acid"],
+        answer={0, 1},
+        explain=("Common radical initiators are **azo compounds and peroxides**: both contain a weak bond "
+                 "(C–N or O–O) that breaks homolytically on heating. Protic or Lewis acids are **cationic** "
+                 "initiators: styrene can also be polymerised cationically (and anionically, e.g. with BuLi), "
+                 "but that is a different mechanism with a carbocation chain end. Diols and diacids are step-growth "
+                 "monomers, not initiators."),
+        anims=[
+            dict(kind="split", reactants=[BPO], products=[I_RAD, I_RAD],
+                 caption="BPO: the weak O–O bond splits into two benzoyloxy radicals (which may lose CO₂)."),
+        ]),
+
+    # ---------------- slot 2 · propagation ----------------
+    dict(
+        id="S2a", slot=2,
+        title="Where does the radical add?",
         context="An initiator radical R• meets a styrene molecule CH₂=CH–Ph.",
         pot=[(I_RAD, 1), (STY, 8)],
         type="single",
@@ -398,15 +578,38 @@ STY_ROUNDS = [
                  "The phenyl ring, removing aromaticity",
                  "Neither: R• abstracts H to form an ester"],
         answer=0,
-        explain=("Addition to the unsubstituted CH₂ end gives **R–CH₂–C•H–Ph**, a benzylic radical "
-                 "delocalised into the ring. This regioselectivity makes the polymer **head-to-tail**. "
+        explain=("Addition to the unsubstituted CH₂ end (rate constant kᵢ) gives **R–CH₂–C•H–Ph**, a benzylic "
+                 "radical delocalised into the ring. This regioselectivity makes the polymer **head-to-tail**. "
                  "The product is still a radical: the active centre has **moved** to the chain end."),
         anims=[
             dict(kind="combine", reactants=[I_RAD, STY], product=pchain(1), caption=
                  "Initiation part 2: R• + CH₂=CHPh → R–CH₂–CH(Ph)•. The radical is carried at the new chain end."),
         ]),
     dict(
-        title="Round 3 · Who can react with whom?",
+        id="S2b", slot=2,
+        title="How fast does the chain grow?",
+        context="Growing polystyryl radicals P• are adding styrene one unit at a time.",
+        pot=[(pchain(3), 2), (STY, 10)],
+        type="single",
+        question="Which rate law describes propagation?",
+        options=["R_p = k_p[M][P•]: depends on monomer and on the (tiny) radical concentration",
+                 "R_p = k[COOH][OH][H⁺], as in polyesterification",
+                 "R_p = k_p[M]²: two monomers must collide",
+                 "R_p is independent of [M] because the radical does all the work"],
+        answer=0,
+        explain=("Each propagation step is one radical + one monomer, so R_p = k_p[M][P•]. k_p for styrene is "
+                 "large (≈ 340 L mol⁻¹ s⁻¹ at 60 °C) but [P•] is only ~10⁻⁸ mol L⁻¹, so the chain grows very "
+                 "quickly while monomer is consumed gradually. In step growth the rate law involves the "
+                 "functional groups of **all** molecules instead."),
+        anims=[
+            dict(kind="combine", reactants=[pchain(3), STY], product=pchain(4),
+                 caption="Propagation: P• + M → P–M•. The radical 'moves' to the new chain end each time."),
+        ]),
+
+    # ---------------- slot 3 · who can react ----------------
+    dict(
+        id="S3a", slot=3,
+        title="Who can react with whom?",
         context="Now the pot has growing radical chains (red dot), lots of styrene and some finished ('dead') polystyrene.",
         pot=[(STY, 10), (pchain(4), 2), (dead(8), 1), (I_RAD, 1)],
         type="multi",
@@ -417,9 +620,7 @@ STY_ROUNDS = [
         answer={0, 1, 2},
         explain=("Only species with a **radical** can react: propagation (chain• + monomer), termination "
                  "(chain• + chain•) and new initiation (R• + monomer). Dead chains and monomers are inert towards "
-                 "each other. Compare with PET, where *every* molecule is reactive. "
-                 "*Nuance:* a radical can occasionally abstract H from a dead chain (chain transfer to polymer), "
-                 "but this is minor for styrene."),
+                 "each other. Compare with PET, where *every* molecule is reactive."),
         anims=[
             dict(kind="combine", reactants=[pchain(4), STY], product=pchain(5),
                  caption="Propagation: monomer adds one at a time; the radical stays at the chain end."),
@@ -429,7 +630,34 @@ STY_ROUNDS = [
                  caption="Monomer + monomer: still no reaction without a radical."),
         ]),
     dict(
-        title="Round 4 · A snapshot at 10 % conversion",
+        id="S3b", slot=3,
+        title="Chain transfer",
+        context=("The polymerisation is run in a solvent with an easily abstracted hydrogen (H–Sol, "
+                 "e.g. toluene or a thiol). A growing chain meets a solvent molecule."),
+        pot=[(pchain(5), 1), (SOLV, 4), (STY, 8)],
+        type="single",
+        question="What is the main effect of chain transfer to solvent?",
+        options=["The chain stops (gains H), a new radical Sol• starts another chain: shorter chains, rate about unchanged",
+                 "Both radicals are destroyed, so the polymerisation stops completely",
+                 "The chain keeps growing but becomes branched",
+                 "The solvent is built into the backbone as a comonomer"],
+        answer=0,
+        explain=("Transfer 'moves the radical to something new': P• + H–Sol → P–H + Sol•. The number of radicals "
+                 "is unchanged, so the rate barely changes, but each chain is cut short, which **limits the "
+                 "molecular weight** (transfer to monomer does the same). Transfer to **polymer** is different: "
+                 "it creates a radical on a dead chain and gives **branches** (long branches intermolecularly, "
+                 "short ones by intramolecular 'backbiting')."),
+        anims=[
+            dict(kind="combine", reactants=[pchain(5), SOLV], product=pchain(5, active=False, end_h=True),
+                 byproduct="Sol•", caption="Transfer: the growing chain takes H and dies; the radical moves to the solvent."),
+            dict(kind="combine", reactants=[SOL_RAD, STY], product={"units": ["X", "S"], "right": "•"},
+                 caption="Sol• re-initiates: a new chain starts, so the radical count is conserved."),
+        ]),
+
+    # ---------------- slot 4 · chain length vs conversion ----------------
+    dict(
+        id="S4a", slot=4,
+        title="A snapshot at 10 % conversion",
         context="Only 10 % of the styrene has been consumed.",
         pot=[(STY, 18), (dead(14), 1), (pchain(9), 1)],
         type="single",
@@ -439,16 +667,41 @@ STY_ROUNDS = [
                  "No polymer yet: polymer only forms near 100 % conversion",
                  "Mainly dimers and trimers"],
         answer=0,
-        explain=("Radical concentration is only ~10⁻⁸ mol L⁻¹, but propagation is fast (k_p ≈ 340 L mol⁻¹ s⁻¹ "
-                 "at 60 °C), so each chain grows to **full length within about a second**, then dies. "
-                 "High-molar-mass polymer is present **from the start**; conversion rises by forming *more* "
-                 "chains, not by making existing chains longer. This is the exact opposite of Round 3 in the PET route."),
+        explain=("Radical concentration is only ~10⁻⁸ mol L⁻¹, but propagation is fast, so each chain grows to "
+                 "**full length within about a second**, then dies. High-molar-mass polymer is present **from the "
+                 "start**; conversion rises by forming *more* chains, not by making existing chains longer. This "
+                 "is the opposite of step growth, where monomer disappears early but chains stay short."),
         anims=[
             dict(kind="combine", reactants=[pchain(9), STY], product=pchain(10),
                  caption="Each active chain adds thousands of monomers in its short lifetime."),
         ]),
     dict(
-        title="Round 5 · How does a chain die?",
+        id="S4b", slot=4,
+        title="Molar mass vs conversion",
+        context=("You sample a free-radical styrene polymerisation at 5 %, 30 % and 60 % conversion "
+                 "and measure Mₙ of the polymer (monomer removed)."),
+        pot=[(STY, 14), (dead(12), 1), (dead(13), 1), (pchain(8), 1)],
+        type="single",
+        question="What trend do you expect?",
+        options=["Mₙ is already high at 5 % and stays roughly similar (drifting down slowly as [M] falls)",
+                 "Mₙ is tiny at 5 % and rises steeply only near 100 %, like the Carothers curve",
+                 "Mₙ rises linearly with conversion",
+                 "Mₙ doubles every time conversion doubles"],
+        answer=0,
+        explain=("In conventional free-radical polymerisation each chain is born, grows and dies within about a "
+                 "second, so Mₙ is set by the **kinetic chain length** (∝ k_p[M]/[P•]), not by conversion. "
+                 "It is high from the start and drifts down slowly as monomer is used up (at high conversion the "
+                 "gel effect can push it back up). The steep curve near 100 % is the step-growth signature; a "
+                 "**linear** increase is the signature of *controlled/living* chain growth."),
+        anims=[
+            dict(kind="combine", reactants=[pchain(8), STY], product=pchain(9),
+                 caption="Growth happens chain by chain: early chains are already long."),
+        ]),
+
+    # ---------------- slot 5 · termination / control ----------------
+    dict(
+        id="S5a", slot=5,
+        title="How does a chain die?",
         context="Two growing polystyryl radicals meet.",
         pot=[(pchain(6), 1), (pchain(5, flip=True), 1), (STY, 6)],
         type="single",
@@ -458,72 +711,133 @@ STY_ROUNDS = [
                  "They keep growing as one chain with two radical ends",
                  "They form an ester and release water"],
         answer=0,
-        explain=("For polystyrene, termination is **mainly by combination**: the two radical ends form a C–C bond, "
-                 "leaving one dead chain with a head-to-head junction, so Xₙ ≈ 2ν (ν = kinetic chain length). "
-                 "Disproportionation (H-transfer giving one saturated and one unsaturated end) dominates for "
-                 "methacrylates such as PMMA. Termination is irreversible: dead chains never restart. "
-                 "(Contrast: PET chain ends stay reactive.)"),
+        explain=("For polystyrene, termination is **mainly by combination** (k_tc): the two radical ends form a "
+                 "C–C bond, giving one dead chain with a head-to-head junction and **twice** the molecular weight. "
+                 "Disproportionation (k_td, H-transfer giving one saturated and one unsaturated end) dominates for "
+                 "methacrylates such as PMMA. Termination is irreversible. (Contrast: PET chain ends stay reactive.)"),
         anims=[
             dict(kind="combine", reactants=[pchain(6), pchain(5, flip=True)], product=dead(11),
                  caption="Combination: two active centres are destroyed, one long dead chain is formed."),
         ]),
+    dict(
+        id="S5b", slot=5,
+        title="Taming the radical: NMP",
+        context=("The same styrene polymerisation is run at ~120 °C with the stable nitroxide **TEMPO** "
+                 "(nitroxide-mediated polymerisation, invented in Melbourne in 1986)."),
+        pot=[(STY, 10), (pchain(4), 1), (TEMPO, 2)],
+        type="single",
+        question="What does TEMPO do?",
+        options=["It reversibly caps the chain end, keeping [P•] tiny so termination is suppressed: Mₙ grows with conversion and Đ is narrow",
+                 "It permanently kills every chain, so no polymer forms",
+                 "It turns the reaction into step growth",
+                 "It adds to styrene and becomes the main initiator of new chains"],
+        answer=0,
+        explain=("P• + TEMPO• ⇌ P–TEMPO (dormant). The equilibrium lies to the dormant side, so at any moment "
+                 "very few chains are active and radical–radical termination becomes rare. Each chain grows a "
+                 "little every time it is activated, so **all chains grow together**: Mₙ increases linearly with "
+                 "conversion, Đ is low and chain ends are well defined ('living'-like). ATRP (Cu/Br) and RAFT "
+                 "(thiocarbonylthio) use the same idea of reversible capping."),
+        anims=[
+            dict(kind="combine", reactants=[pchain(6), TEMPO], product=dormant(6),
+                 caption="Deactivation: the radical end is capped by TEMPO and becomes dormant."),
+            dict(kind="split", reactants=[dormant(6)], products=[pchain(6), TEMPO],
+                 caption="Activation (heat): the C–O bond breaks again, the chain adds a few monomers, then is capped again."),
+        ]),
 ]
 
-ROUTES = {"pet": ("PET: step growth", PET_ROUNDS),
-          "sty": ("Polystyrene: radical chain growth", STY_ROUNDS)}
-
+BANKS = {"pet": PET_BANK, "sty": STY_BANK}
+QBYID = {q["id"]: q for bank in BANKS.values() for q in bank}
+ROUTE_NAMES = {"pet": "PET: step growth", "sty": "Polystyrene: radical chain growth"}
+N_SLOTS = 5
 
 # =============================================================================
-# 4. Round engine
+# 4. Round engine (random draw per attempt + shuffled options)
 # =============================================================================
 ss = st.session_state
 ss.setdefault("nonce", 0)
 
 
-def run_route(key):
-    name, rounds = ROUTES[key]
-    idx = ss.setdefault(f"{key}_idx", 0)
-    results = ss.setdefault(f"{key}_res", {})
+def new_attempt(key):
+    """Draw one question per slot and shuffle every option list.
 
-    if idx >= len(rounds):
+    - Unseen questions are always preferred, so the whole bank is covered in 2 attempts.
+    - After that, each slot is drawn at random, weighted towards less-seen questions.
+    - A set identical to the previous attempt is re-drawn."""
+    seen = ss.setdefault(f"{key}_seen", {})
+    last = ss.get(f"{key}_set", [])
+    for _ in range(30):
+        chosen = []
+        for slot in range(1, N_SLOTS + 1):
+            pool = [q["id"] for q in BANKS[key] if q["slot"] == slot]
+            unseen = [q for q in pool if seen.get(q, 0) == 0]
+            if unseen:
+                chosen.append(random.choice(unseen))
+            else:
+                w = [1 / (1 + seen[q]) for q in pool]
+                chosen.append(random.choices(pool, weights=w)[0])
+        if chosen != last:
+            break
+    for q in chosen:
+        seen[q] = seen.get(q, 0) + 1
+    ss[f"{key}_set"] = chosen
+    ss[f"{key}_order"] = {qid: random.sample(QBYID[qid]["options"], len(QBYID[qid]["options"]))
+                          for qid in chosen}
+    ss[f"{key}_attempt"] = ss.get(f"{key}_attempt", 0) + 1
+    ss[f"{key}_idx"] = 0
+    ss[f"{key}_res"] = {}
+
+
+def run_route(key):
+    name = ROUTE_NAMES[key]
+    if f"{key}_set" not in ss:
+        new_attempt(key)
+    qset = ss[f"{key}_set"]
+    idx = ss[f"{key}_idx"]
+    results = ss[f"{key}_res"]
+    att = ss[f"{key}_attempt"]
+
+    if idx >= len(qset):
         n_ok = sum(results.values())
-        st.success(f"Route complete: **{n_ok} / {len(rounds)}** predictions correct.")
-        st.markdown("Now try the **Mystery challenge** tab to test whether you can tell the two mechanisms apart "
-                    "without labels.")
-        if st.button("Restart this route", key=f"{key}_restart"):
-            ss[f"{key}_idx"] = 0
-            ss[f"{key}_res"] = {}
-            for k in [k for k in ss.keys() if k.startswith(f"{key}_q") or k.startswith(f"{key}_why")]:
-                del ss[k]
+        hist = ss.setdefault(f"{key}_hist", {})
+        hist[att] = n_ok
+        st.success(f"Attempt {att} complete: **{n_ok} / {len(qset)}** predictions correct.")
+        st.markdown("Questions in this attempt: " + ", ".join(QBYID[q]["title"] for q in qset))
+        st.markdown("Start a new attempt to get a different set of questions (same learning order), "
+                    "or try the **Mystery challenge** tab.")
+        if st.button("Start a new attempt", type="primary", key=f"{key}_restart{att}"):
+            new_attempt(key)
             st.rerun()
         return
 
-    R = rounds[idx]
-    st.progress(idx / len(rounds), text=f"{name} · round {idx + 1} of {len(rounds)}")
-    st.subheader(R["title"])
+    R = QBYID[qset[idx]]
+    opts = ss[f"{key}_order"][R["id"]]            # shuffled display order
+    correct_txt = ({R["options"][R["answer"]]} if R["type"] == "single"
+                   else {R["options"][i] for i in R["answer"]})
+
+    st.progress(idx / len(qset),
+                text=f"{name} · attempt {att} · question {idx + 1} of {len(qset)} · "
+                     f"{SLOT_NAMES[key][R['slot']]}")
+    st.subheader(f"Q{idx + 1} · {R['title']}")
     st.markdown(R["context"])
     svg, h = pot_svg(R["pot"], title="Reactor contents")
     components.html(BASE_CSS + svg, height=h + 16)
 
     answered = idx in results
-    qkey = f"{key}_q{idx}"
+    qkey = f"{key}_a{att}_q{idx}"
     if R["type"] == "single":
-        choice = st.radio(R["question"], R["options"], index=None, key=qkey, disabled=answered)
+        choice = st.radio(R["question"], opts, index=None, key=qkey, disabled=answered)
     else:
-        choice = st.multiselect(R["question"], R["options"], key=qkey, disabled=answered)
+        choice = st.multiselect(R["question"], opts, key=qkey, disabled=answered)
     st.text_input("Your reasoning in one sentence (write it before you reveal):",
-                  key=f"{key}_why{idx}", disabled=answered)
+                  key=f"{key}_a{att}_why{idx}", disabled=answered)
 
     if not answered:
-        if st.button("Lock in my prediction", type="primary", key=f"{key}_lock{idx}"):
+        if st.button("Lock in my prediction", type="primary", key=f"{key}_a{att}_lock{idx}"):
             if not choice:
                 st.warning("Make a prediction first.")
             else:
-                if R["type"] == "single":
-                    ok = R["options"].index(choice) == R["answer"]
-                else:
-                    ok = {R["options"].index(c) for c in choice} == R["answer"]
-                results[idx] = ok
+                picked = {choice} if R["type"] == "single" else set(choice)
+                results[idx] = picked == correct_txt
                 st.rerun()
         return
 
@@ -533,14 +847,14 @@ def run_route(key):
     else:
         st.error("Not quite. Compare your answer with the mechanism below.")
     if R["type"] == "multi":
-        chosen = {R["options"].index(c) for c in (choice or [])}
+        chosen = set(choice or [])
         rows = []
-        for i, opt in enumerate(R["options"]):
-            truth = i in R["answer"]
-            rows.append({"Pair / reaction": opt,
-                         "Can react?": "Yes" if truth else "No",
-                         "You said": "Yes" if i in chosen else "No",
-                         "": "✓" if (i in chosen) == truth else "✗"})
+        for opt in opts:
+            truth = opt in correct_txt
+            rows.append({"Option": opt,
+                         "Correct?": "Yes" if truth else "No",
+                         "You said": "Yes" if opt in chosen else "No",
+                         "": "✓" if (opt in chosen) == truth else "✗"})
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     else:
         st.markdown(f"**Answer:** {R['options'][R['answer']]}")
@@ -550,10 +864,10 @@ def run_route(key):
     for a in R["anims"]:
         components.html(anim_html(a, ss.nonce), height=215)
     c1, c2 = st.columns([1, 4])
-    if c1.button("Replay animations", key=f"{key}_replay{idx}"):
+    if c1.button("Replay animations", key=f"{key}_a{att}_replay{idx}"):
         ss.nonce += 1
         st.rerun()
-    if c2.button("Next round →", type="primary", key=f"{key}_next{idx}"):
+    if c2.button("Next question →", type="primary", key=f"{key}_a{att}_next{idx}"):
         ss[f"{key}_idx"] = idx + 1
         st.rerun()
 
@@ -820,10 +1134,16 @@ st.caption("Predict first, then reveal. Focus on **which molecules are allowed t
 
 with st.sidebar:
     st.header("Progress")
-    for k, (name, rounds) in ROUTES.items():
+    for k, name in ROUTE_NAMES.items():
         res = ss.get(f"{k}_res", {})
-        st.markdown(f"**{name}**: {sum(res.values())} / {len(res)} correct "
-                    f"({len(res)}/{len(rounds)} answered)")
+        att = ss.get(f"{k}_attempt", 1)
+        st.markdown(f"**{name}**  \nAttempt {att}: {sum(res.values())} / {len(res)} correct "
+                    f"({len(res)}/{N_SLOTS} answered)")
+        hist = ss.get(f"{k}_hist", {})
+        if hist:
+            st.caption("Finished attempts: " + ", ".join(f"#{a}: {v}/{N_SLOTS}" for a, v in sorted(hist.items())))
+        seen = ss.get(f"{k}_seen", {})
+        st.caption(f"Question bank explored: {len(seen)}/{len(BANKS[k])}")
     st.divider()
     st.markdown("**Bead key**")
     st.markdown("🔵 T = terephthaloyl · 🟠 E = glycol unit  \n"

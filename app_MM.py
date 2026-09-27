@@ -6,7 +6,9 @@ An interactive Streamlit tool that lets undergraduates *predict* each step of
   (2) styrene free-radical chain-growth polymerisation (AIBN initiator),
 then reveal an animated schematic + explanation.
 Version 2: each route has a 10-question bank (5 learning-order slots x 2).
-Every attempt draws one question per slot and shuffles the answer options. A final "mystery" challenge
+Every attempt draws one question per slot and shuffles the answer options.
+Version 3: calculation questions get random numbers each attempt; simulators use
+per-run random seeds and a replicate panel to show run-to-run scatter. A final "mystery" challenge
 asks students to classify two unlabelled processes from mechanistic evidence.
 
 Run:  pip install streamlit pandas altair
@@ -395,7 +397,7 @@ PET_BANK = [
     # ---------------- slot 3 · conversion and chain length ----------------
     dict(
         id="P3a", slot=3,
-        title="How long are the chains halfway through?",
+        title="How long are the chains?",
         context=("Half of all COOH groups have now reacted (extent of reaction **p = 0.50**). "
                  "Almost no free monomer remains, but look at the chain lengths."),
         pot=[(TPA, 1), (EG, 1), (step("TE"), 3), (step("ETE"), 2), (step("TET"), 2), (step("TETE"), 1)],
@@ -751,6 +753,145 @@ ROUTE_NAMES = {"pet": "PET: step growth", "sty": "Polystyrene: radical chain gro
 N_SLOTS = 5
 
 # =============================================================================
+# 3b. Randomised numbers for the calculation questions
+#     gen(rng) returns fields that overwrite the static text of a question.
+#     Every attempt gets fresh numbers, so the 5 calculation questions act as a
+#     much larger question bank without adding new questions.
+# =============================================================================
+def fmt(v, nd=1):
+    if v == float("inf"):
+        return "∞"
+    if abs(v - round(v)) < 1e-9:
+        return f"{int(round(v))}"
+    return f"{v:.{nd}f}"
+
+
+def _distinct(correct, distractors):
+    """Correct option first, then unique distractors (needs 3)."""
+    out = [correct]
+    for d in distractors:
+        if d not in out:
+            out.append(d)
+    return out[:4]
+
+
+def gen_p3a(rng):
+    p = rng.choice([0.50, 0.60, 0.75, 0.80, 0.90, 0.95, 0.98])
+    xn = 1 / (1 - p)
+    opts = _distinct(f"Xₙ = {fmt(xn)}",
+                     [f"Xₙ = {fmt(1 / p, 2)}", f"Xₙ = {fmt(100 * p)}", f"Xₙ = {fmt(xn ** 2)}",
+                      f"Xₙ = {fmt(p / (1 - p) + 10)}"])
+    return dict(
+        context=(f"The extent of reaction is now **p = {p:.2f}** (fraction of COOH groups that have reacted). "
+                 "Look at how much monomer is left and how long the chains are."),
+        question="What is the number-average degree of polymerisation, Xₙ?",
+        options=opts, answer=0,
+        explain=(f"**Carothers equation**: Xₙ = 1 / (1 − p) = 1 / {1 - p:.2f} = **{fmt(xn)}**. "
+                 "Monomer is used up early, yet the chains stay short until p is very close to 1: "
+                 "p = 0.90 gives Xₙ = 10; p = 0.99 gives Xₙ = 100."))
+
+
+def gen_p3b(rng):
+    for _ in range(50):
+        n0 = rng.choice([12, 16, 20, 24, 30, 40])
+        nt = rng.choice([d for d in range(2, n0 // 2) if n0 % d == 0 or rng.random() < 0.3])
+        p, xn = (n0 - nt) / n0, n0 / nt
+        opts = _distinct(f"p = {p:.2f} and Xₙ = {fmt(xn)}",
+                         [f"p = {nt / n0:.2f} and Xₙ = {fmt(n0 / (n0 - nt))}",
+                          f"p = {p:.2f} and Xₙ = {n0 - nt}",
+                          f"p = {p:.2f} and Xₙ = {n0}",
+                          f"p = {1 - 2 * nt / n0:.2f} and Xₙ = {fmt(xn / 2)}"])
+        if len(opts) == 4:
+            break
+    return dict(
+        context=(f"You start with **{n0} monomer molecules** ({n0 // 2} TPA + {n0 // 2} EG). Later you count only "
+                 f"**{nt} molecules** in the pot. Every ester bond joins two molecules into one."),
+        question="What are the conversion p and Xₙ now?",
+        options=opts, answer=0,
+        explain=(f"Each reaction removes one molecule, so bonds formed = N₀ − Nₜ = {n0} − {nt} = {n0 - nt}, and "
+                 f"p = (N₀ − Nₜ)/N₀ = {n0 - nt}/{n0} = **{p:.2f}**. Then Xₙ = N₀/Nₜ = {n0}/{nt} = **{fmt(xn)}**, "
+                 f"which matches 1/(1 − p). To convert to molar mass use Mₙ = M_RU × Xₙ."))
+
+
+def gen_p4b(rng):
+    for _ in range(50):
+        t1 = rng.choice([1, 2])
+        slope = rng.choice([4, 5, 6, 8, 10, 12, 15])          # c0·k' in h⁻¹
+        a = slope * t1 + 1
+        t2 = rng.choice([t for t in (3, 4, 5, 6) if t > t1])
+        ans = slope * t2 + 1
+        opts = _distinct(f"Xₙ = {ans}",
+                         [f"Xₙ = {fmt(a * t2 / t1)}", f"Xₙ = {slope * t2}", f"Xₙ = {a + t2}",
+                          f"Xₙ = {fmt(a ** (t2 / t1))}"])
+        if len(opts) == 4:
+            break
+    return dict(
+        context=("The esterification is run with an added acid catalyst at constant [H⁺] and equal "
+                 "[COOH] = [OH]. From the lecture: 1/(1 − p) = c₀k′t + 1, with k′ = k[H⁺]. "
+                 f"At t = 0, Xₙ = 1; after **{t1} h**, Xₙ = **{a}**."),
+        question=f"What is Xₙ after {t2} h (same conditions)?",
+        options=opts, answer=0,
+        explain=(f"Xₙ = 1/(1 − p) = c₀k′t + 1, so Xₙ grows **linearly with time**. From the data: "
+                 f"c₀k′ = ({a} − 1)/{t1} = {slope} h⁻¹, so at {t2} h Xₙ = {slope} × {t2} + 1 = **{ans}** "
+                 f"(not {fmt(a * t2 / t1)}, which forgets the '+1'). The rate law behind it is second order "
+                 "in functional groups: −dc/dt = k[H⁺]c²."))
+
+
+def gen_p5a(rng):
+    for _ in range(50):
+        r = rng.choice([0.95, 0.97, 0.98, 0.99, 0.995])
+        p = rng.choice([1.0, 1.0, 0.99, 0.98])
+        xn = (1 + r) / (1 + r - 2 * r * p)
+        ideal = float("inf") if p == 1 else 1 / (1 - p)
+        opts = _distinct(f"Xₙ ≈ {fmt(xn)}",
+                         [f"Xₙ ≈ {fmt(ideal)}", f"Xₙ ≈ {fmt(1 / (1 - r))}", f"Xₙ ≈ {fmt(xn / 2)}",
+                          f"Xₙ ≈ {fmt(r / (1 - r))}"])
+        if len(opts) == 4:
+            break
+    excess = (1 / r - 1) * 100
+    pt = "every COOH reacts (p = 1)" if p == 1 else f"p = {p:.2f} (conversion of COOH)"
+    return dict(
+        context=(f"You weigh out a small excess of EG (≈ {excess:.1f} mol % extra OH groups), so the ratio of groups "
+                 f"is **r = N_COOH/N_OH = {r}**."),
+        question=f"If {pt}, what is Xₙ?",
+        options=opts, answer=0,
+        explain=(f"Modified Carothers: Xₙ = (1 + r) / (1 + r − 2rp) = {1 + r:.3f} / ({1 + r:.3f} − 2 × {r} × {p:.2f}) "
+                 f"= **{fmt(xn)}**. Without the imbalance it would be {fmt(ideal)}. Once the COOH groups run out, "
+                 "chains are capped with OH at both ends and **no complementary partner is left**. "
+                 "(Lecture example: r = 0.5 and p = 0.99 gives only Xₙ = 2.94, i.e. trimers.)"))
+
+
+def gen_p5b(rng):
+    p = rng.choice([0.90, 0.95, 0.98, 0.99, 0.995])
+    xn, xw, D = 1 / (1 - p), (1 + p) / (1 - p), 1 + p
+    opts = _distinct(f"Xₙ = {fmt(xn)}, Xw = {fmt(xw)}, Đ ≈ {D:g}",
+                     [f"Xₙ = {fmt(xn)}, Xw = {fmt(xn)}, Đ = 1.00",
+                      f"Xₙ = {fmt(xn)}, Xw = {fmt(xn * xn)}, Đ = {fmt(xn)}",
+                      f"Xₙ = {fmt(xn - 1)}, Xw = {fmt(xw)}, Đ ≈ 2.0"])
+    return dict(
+        context=(f"A perfectly balanced PET synthesis is stopped at **p = {p}**. "
+                 "From the lecture: Xw = (1 + p)/(1 − p) and dispersity Đ = Xw/Xₙ = 1 + p."),
+        question="Which set of values is correct?",
+        options=opts, answer=0,
+        explain=(f"Xₙ = 1/(1 − p) = **{fmt(xn)}**; Xw = (1 + p)/(1 − p) = **{fmt(xw)}**; Đ = 1 + p = **{D:g}**. "
+                 "The mixture starts monodisperse (all monomer, Đ = 1) and approaches **Đ = 2** at full conversion, "
+                 "because chains of every length keep coupling at random. A controlled/living chain growth can "
+                 "give Đ close to 1."))
+
+
+GENERATORS = {"P3a": gen_p3a, "P3b": gen_p3b, "P4b": gen_p4b, "P5a": gen_p5a, "P5b": gen_p5b}
+
+
+def instantiate(q):
+    """Return a concrete copy of question q (random numbers filled in if it has a generator)."""
+    inst = dict(q)
+    if q["id"] in GENERATORS:
+        inst.update(GENERATORS[q["id"]](random))
+        inst["randomised"] = True
+    return inst
+
+
+# =============================================================================
 # 4. Round engine (random draw per attempt + shuffled options)
 # =============================================================================
 ss = st.session_state
@@ -780,7 +921,9 @@ def new_attempt(key):
     for q in chosen:
         seen[q] = seen.get(q, 0) + 1
     ss[f"{key}_set"] = chosen
-    ss[f"{key}_order"] = {qid: random.sample(QBYID[qid]["options"], len(QBYID[qid]["options"]))
+    inst = {qid: instantiate(QBYID[qid]) for qid in chosen}      # fresh numbers each attempt
+    ss[f"{key}_inst"] = inst
+    ss[f"{key}_order"] = {qid: random.sample(inst[qid]["options"], len(inst[qid]["options"]))
                           for qid in chosen}
     ss[f"{key}_attempt"] = ss.get(f"{key}_attempt", 0) + 1
     ss[f"{key}_idx"] = 0
@@ -809,7 +952,7 @@ def run_route(key):
             st.rerun()
         return
 
-    R = QBYID[qset[idx]]
+    R = ss[f"{key}_inst"][qset[idx]]
     opts = ss[f"{key}_order"][R["id"]]            # shuffled display order
     correct_txt = ({R["options"][R["answer"]]} if R["type"] == "single"
                    else {R["options"][i] for i in R["answer"]})
@@ -818,6 +961,8 @@ def run_route(key):
                 text=f"{name} · attempt {att} · question {idx + 1} of {len(qset)} · "
                      f"{SLOT_NAMES[key][R['slot']]}")
     st.subheader(f"Q{idx + 1} · {R['title']}")
+    if R.get("randomised"):
+        st.caption("Calculation question: the numbers are generated randomly for each attempt.")
     st.markdown(R["context"])
     svg, h = pot_svg(R["pot"], title="Reactor contents")
     components.html(BASE_CSS + svg, height=h + 16)
@@ -1020,109 +1165,263 @@ def run_compare():
                               "Not relevant"]}), hide_index=True, width="stretch")
 
 
-def sim_step_init(n=100):
-    ss.sim_s = [[1, "A", "A"] for _ in range(n)] + [[1, "B", "B"] for _ in range(n)]
-    ss.sim_s_bonds, ss.sim_s_A0 = 0, 2 * n
+# ---------------------------------------------------------------------------
+# Stochastic simulators. Each run owns its own random.Random(seed), so
+#   * two different runs are statistically independent (different histograms),
+#   * the same seed reproduces a run exactly (useful for teaching / checking).
+# ---------------------------------------------------------------------------
+N_STEP = 100                      # 100 A–A + 100 B–B molecules
+CH = dict(M0=5000, I0=100, kd=0.01, f=0.6, kp=20.0, kt=0.10, max_ticks=4000)
 
 
-def sim_step_advance(k):
-    mols = ss.sim_s
+def new_seed():
+    return random.randrange(1, 10**6)
+
+
+def step_new(seed):
+    return {"mols": [[1, "A", "A"] for _ in range(N_STEP)] + [[1, "B", "B"] for _ in range(N_STEP)],
+            "bonds": 0, "A0": 2 * N_STEP, "seed": seed, "rng": random.Random(seed)}
+
+
+def step_bonds(s, k):
+    """Form k ester-like bonds between randomly chosen complementary ends."""
+    mols, rng = s["mols"], s["rng"]
     for _ in range(k):
-        Aend = [(i, s) for i, m in enumerate(mols) for s in (1, 2) if m[s] == "A"]
-        Bend = [(i, s) for i, m in enumerate(mols) for s in (1, 2) if m[s] == "B"]
-        for _try in range(20):
+        Aend = [(i, e) for i, m in enumerate(mols) for e in (1, 2) if m[e] == "A"]
+        Bend = [(i, e) for i, m in enumerate(mols) for e in (1, 2) if m[e] == "B"]
+        for _try in range(50):
             if not Aend or not Bend:
                 return
-            (ia, sa), (ib, sb) = random.choice(Aend), random.choice(Bend)
-            if ia != ib:
+            (ia, ea), (ib, eb) = rng.choice(Aend), rng.choice(Bend)
+            if ia != ib:           # no cyclisation in this model
                 break
         else:
             return
         ma, mb = mols[ia], mols[ib]
-        new = [ma[0] + mb[0], ma[3 - sa], mb[3 - sb]]
+        new = [ma[0] + mb[0], ma[3 - ea], mb[3 - eb]]
         for i in sorted((ia, ib), reverse=True):
             mols.pop(i)
         mols.append(new)
-        ss.sim_s_bonds += 1
+        s["bonds"] += 1
 
 
-def sim_chain_init():
-    ss.sim_c = dict(M=5000, M0=5000, I=12, active=[], dead=[], t=0)
+def step_run_to(seed, p_target):
+    s = step_new(seed)
+    step_bonds(s, round(p_target * s["A0"]))
+    return s
 
 
-def sim_chain_advance(ticks):
-    c = ss.sim_c
+def chain_new(seed):
+    return {"M": CH["M0"], "I": CH["I0"], "active": [], "dead": [], "t": 0,
+            "seed": seed, "rng": random.Random(seed)}
+
+
+def chain_ticks(c, ticks):
+    """One tick = initiator decomposition, propagation, termination by combination."""
+    rng = c["rng"]
     for _ in range(ticks):
+        if c["I"] == 0 and not c["active"]:
+            return                       # dead end: no initiator and no radicals left
         c["t"] += 1
         for _ in range(c["I"]):
-            if random.random() < 0.03:
+            if rng.random() < CH["kd"]:
                 c["I"] -= 1
-                c["active"] += [0, 0]
+                c["active"] += [0 for _ in range(2) if rng.random() < CH["f"]]   # cage effect
         grow = []
         for L in c["active"]:
-            add = min(c["M"], max(0, round(random.gauss(12 * c["M"] / c["M0"], 2))))
+            mu = CH["kp"] * c["M"] / CH["M0"]
+            add = min(c["M"], max(0, round(rng.gauss(mu, math.sqrt(mu) if mu > 0 else 0))))
             c["M"] -= add
             grow.append(L + add)
-        random.shuffle(grow)
+        rng.shuffle(grow)
         keep = []
         while grow:
             L = grow.pop()
-            if grow and random.random() < 0.12:
-                c["dead"].append(L + grow.pop())
+            if grow and rng.random() < CH["kt"]:
+                c["dead"].append(L + grow.pop())      # combination
             else:
                 keep.append(L)
         c["active"] = keep
 
 
+def chain_conv(c):
+    return 1 - c["M"] / CH["M0"]
+
+
+def chain_run_to(seed, x_target):
+    c = chain_new(seed)
+    while chain_conv(c) < x_target and c["t"] < CH["max_ticks"]:
+        before = c["t"]
+        chain_ticks(c, 1)
+        if c["t"] == before:
+            break
+    return c
+
+
+def averages(lengths):
+    if not lengths:
+        return 0.0, 0.0, 0.0
+    n, s1, s2 = len(lengths), sum(lengths), sum(L * L for L in lengths)
+    xn, xw = s1 / n, s2 / s1
+    return xn, xw, xw / xn
+
+
+def step_dist_df(s, label, xmax=15):
+    L = [m[0] for m in s["mols"]]
+    n = len(L)
+    return pd.DataFrame({"x": list(range(1, xmax + 1)),
+                         "fraction": [sum(1 for v in L if v == x) / n for x in range(1, xmax + 1)],
+                         "run": label})
+
+
+def chain_dist_df(c, label, width=50, xmax=600):
+    P = c["dead"] + c["active"]
+    edges = list(range(0, xmax, width))
+    n = max(1, len(P))
+    return pd.DataFrame({"x": [e + width / 2 for e in edges],
+                         "fraction": [sum(1 for v in P if e < v <= e + width) / n for e in edges],
+                         "run": label})
+
+
 def run_sim():
     st.subheader("Mini simulator: watch the pot evolve")
+    st.markdown("Every run uses its own random seed. Two runs stopped at the **same** p or x give "
+                "**different** histograms (random fluctuations), while the *averages* follow the theory. "
+                "Use the replicate panel below to see this directly.")
     left, right = st.columns(2)
+
+    # ---------------- step growth: single run ----------------
     with left:
-        st.markdown("#### Step growth (A–A + B–B, 100 + 100 molecules)")
+        st.markdown(f"#### Step growth (A–A + B–B, {N_STEP} + {N_STEP} molecules)")
         if "sim_s" not in ss:
-            sim_step_init()
+            ss.sim_s = step_new(new_seed())
         b1, b2 = st.columns(2)
         if b1.button("Form 20 bonds"):
-            sim_step_advance(20)
-        if b2.button("Reset", key="rs1"):
-            sim_step_init()
-        mols = ss.sim_s
-        p = ss.sim_s_bonds / ss.sim_s_A0
-        xn = sum(m[0] for m in mols) / len(mols)
-        m1, m2, m3 = st.columns(3)
+            step_bonds(ss.sim_s, 20)
+        if b2.button("New random run", key="rs1"):
+            ss.sim_s = step_new(new_seed())
+        s = ss.sim_s
+        p = s["bonds"] / s["A0"]
+        L = [m[0] for m in s["mols"]]
+        xn, xw, D = averages(L)
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("Extent p", f"{p:.2f}")
-        m2.metric("Xₙ (sim)", f"{xn:.1f}")
-        m3.metric("Xₙ Carothers", f"{1 / (1 - p):.1f}" if p < 1 else "∞")
-        df = pd.DataFrame({"length": [m[0] for m in mols]})
-        st.altair_chart(alt.Chart(df).mark_bar(color="#2563eb").encode(
-            x=alt.X("length:Q", bin=alt.Bin(maxbins=30), title="Chain length (units)"),
-            y=alt.Y("count()", title="Number of molecules")), width="stretch")
-        st.caption(f"Monomers left: {sum(1 for m in mols if m[0] == 1)} of 200. Note how monomer vanishes early.")
+        m2.metric("Xₙ (= 1/(1−p))", f"{xn:.2f}")
+        m3.metric("Đ sim", f"{D:.2f}")
+        m4.metric("Đ theory 1+p", f"{1 + p:.2f}")
+        xmax = min(max(L), 30)
+        df = step_dist_df(s, "this run", xmax)
+        theo = pd.DataFrame({"x": list(range(1, xmax + 1)),
+                             "fraction": [(1 - p) * p ** (x - 1) for x in range(1, xmax + 1)]})
+        bars = alt.Chart(df).mark_bar(color="#2563eb", opacity=0.75).encode(
+            x=alt.X("x:Q", title="Chain length x (units)", scale=alt.Scale(domain=[0.5, xmax + 0.5])),
+            y=alt.Y("fraction:Q", title="Number fraction"))
+        line = alt.Chart(theo).mark_line(color="#0f172a", strokeDash=[5, 4], point=True).encode(x="x:Q", y="fraction:Q")
+        st.altair_chart(bars + line if p > 0 else bars, width="stretch")
+        st.caption(f"Seed {s['seed']}. Bars: this run. Dashed: Flory most-probable distribution (1 − p)·p^(x−1). "
+                   "Xₙ always equals 1/(1 − p) exactly, because each bond removes exactly one molecule "
+                   "(Xₙ = N₀/Nₜ); the *shape* of the distribution is what changes from run to run.")
+
+    # ---------------- chain growth: single run ----------------
     with right:
-        st.markdown("#### Chain growth (5000 styrene, 12 AIBN)")
+        st.markdown(f"#### Chain growth ({CH['M0']} styrene, {CH['I0']} AIBN)")
         if "sim_c" not in ss:
-            sim_chain_init()
+            ss.sim_c = chain_new(new_seed())
         b1, b2 = st.columns(2)
         if b1.button("Run 5 time steps"):
-            sim_chain_advance(5)
-        if b2.button("Reset", key="rs2"):
-            sim_chain_init()
+            chain_ticks(ss.sim_c, 5)
+        if b2.button("New random run", key="rs2"):
+            ss.sim_c = chain_new(new_seed())
         c = ss.sim_c
-        conv = 1 - c["M"] / c["M0"]
-        polys = c["dead"] + c["active"]
-        xn = (sum(polys) / len(polys)) if polys else 0
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Conversion x", f"{conv:.2f}")
+        P = c["dead"] + c["active"]
+        xn, xw, D = averages(P)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Conversion x", f"{chain_conv(c):.2f}")
         m2.metric("Xₙ of polymer", f"{xn:.0f}")
-        m3.metric("Active radicals", len(c["active"]))
-        if polys:
-            df = pd.DataFrame({"length": polys})
-            st.altair_chart(alt.Chart(df).mark_bar(color="#16a34a").encode(
-                x=alt.X("length:Q", bin=alt.Bin(maxbins=30), title="Chain length (units)"),
-                y=alt.Y("count()", title="Number of chains")), width="stretch")
+        m3.metric("Đ sim", f"{D:.2f}" if P else "–")
+        m4.metric("Active radicals", len(c["active"]))
+        if P:
+            df = chain_dist_df(c, "this run")
+            st.altair_chart(alt.Chart(df).mark_bar(color="#16a34a", opacity=0.8).encode(
+                x=alt.X("x:Q", title="Chain length (units, bins of 50)"),
+                y=alt.Y("fraction:Q", title="Number fraction of chains")), width="stretch")
         else:
             st.info("No chains yet: press 'Run 5 time steps'.")
-        st.caption(f"Monomers left: {c['M']} of {c['M0']}. Long chains appear immediately while monomer persists.")
+        st.caption(f"Seed {c['seed']}. Monomer left: {c['M']} of {CH['M0']}; initiator left: {c['I']}. "
+                   "Long chains appear immediately while monomer persists. Termination by combination "
+                   "gives Đ ≈ 1.5 in theory." + (" Initiator exhausted: 'dead-end' polymerisation."
+                                                 if c["I"] == 0 and not c["active"] else ""))
+
+    # ---------------- replicate experiment ----------------
+    st.divider()
+    st.subheader("Replicate experiment: same conversion, different random runs")
+    st.markdown("Stop several independent runs at the **same** conversion and compare. "
+                "Scatter between runs is the stochastic nature of polymerisation; the theory curve is the average.")
+    n_rep = st.slider("Number of replicate runs", 3, 8, 5)
+    r1, r2 = st.columns(2)
+    with r1:
+        p_t = st.slider("Step growth: stop at p =", 0.30, 0.90, 0.70, 0.05)
+        if st.button("Run step-growth replicates"):
+            ss.rep_s = (p_t, [step_run_to(new_seed(), p_t) for _ in range(n_rep)])
+        if "rep_s" in ss:
+            p_r, runs = ss.rep_s
+            frames = [step_dist_df(s, f"run {i + 1}") for i, s in enumerate(runs)]
+            theo = pd.DataFrame({"x": list(range(1, 16)),
+                                 "fraction": [(1 - p_r) * p_r ** (x - 1) for x in range(1, 16)],
+                                 "run": "theory"})
+            dfr = pd.concat(frames + [theo])
+            st.altair_chart(alt.Chart(dfr).mark_line(point=True).encode(
+                x=alt.X("x:Q", title="Chain length x"), y=alt.Y("fraction:Q", title="Number fraction"),
+                color=alt.Color("run:N", title=None, scale=alt.Scale(
+                    domain=[f"run {i + 1}" for i in range(len(runs))] + ["theory"],
+                    range=["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c",
+                           "#0891b2", "#ca8a04", "#db2777"][:len(runs)] + ["#0f172a"])),
+                strokeDash=alt.condition(alt.datum.run == "theory", alt.value([6, 4]), alt.value([1, 0])),
+                strokeWidth=alt.condition(alt.datum.run == "theory", alt.value(3), alt.value(1.5))),
+                width="stretch")
+            rows = []
+            for i, s in enumerate(runs):
+                xn, xw, D = averages([m[0] for m in s["mols"]])
+                rows.append({"run": i + 1, "seed": s["seed"], "Xn": round(xn, 2), "Xw": round(xw, 2),
+                             "Đ": round(D, 2), "longest chain": max(m[0] for m in s["mols"])})
+            rows.append({"run": "theory", "seed": "", "Xn": round(1 / (1 - p_r), 2),
+                         "Xw": round((1 + p_r) / (1 - p_r), 2), "Đ": round(1 + p_r, 2), "longest chain": ""})
+            st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, width="stretch")
+            st.caption(f"All runs stopped at p = {p_r:.2f}. Xₙ is identical by definition; Xw, Đ and the longest "
+                       "chain scatter. With only 200 molecules the scatter is large; a real flask has ~10²³.")
+    with r2:
+        x_t = st.slider("Chain growth: stop at x =", 0.10, 0.80, 0.40, 0.05)
+        if st.button("Run chain-growth replicates"):
+            ss.rep_c = (x_t, [chain_run_to(new_seed(), x_t) for _ in range(n_rep)])
+        if "rep_c" in ss:
+            x_r, runs = ss.rep_c
+            dfr = pd.concat([chain_dist_df(c, f"run {i + 1}") for i, c in enumerate(runs)])
+            st.altair_chart(alt.Chart(dfr).mark_line(point=True).encode(
+                x=alt.X("x:Q", title="Chain length (bins of 50)"), y=alt.Y("fraction:Q", title="Number fraction"),
+                color=alt.Color("run:N", title=None)), width="stretch")
+            rows = []
+            for i, c in enumerate(runs):
+                P = c["dead"] + c["active"]
+                xn, xw, D = averages(P)
+                rows.append({"run": i + 1, "seed": c["seed"], "x reached": round(chain_conv(c), 3),
+                             "chains": len(P), "Xn": round(xn), "Đ": round(D, 2), "time steps": c["t"]})
+            st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, width="stretch")
+            st.caption(f"All runs stopped at x ≈ {x_r:.2f}. Chain count, Xₙ and Đ scatter between runs; "
+                       "Xₙ is set by the kinetic chain length, not by conversion. Đ scatters around 1.5–1.8 (ideal combination gives 1.5; "
+                       "the falling [M] and random lifetimes in this toy model broaden it), "
+                       "(combination), unlike step growth where Đ → 2.")
+
+    with st.expander("Reproduce a specific run from its seed"):
+        cc1, cc2, cc3 = st.columns(3)
+        seed_in = cc1.number_input("Seed", 1, 10**6, 12345)
+        which = cc2.selectbox("Simulator", ["Step growth", "Chain growth"])
+        if cc3.button("Load this seed"):
+            if which == "Step growth":
+                ss.sim_s = step_new(int(seed_in))
+            else:
+                ss.sim_c = chain_new(int(seed_in))
+            st.rerun()
+        st.caption("The same seed and the same button presses always reproduce the same run.")
     st.caption("Toy stochastic models for intuition only: rates and numbers are illustrative, not fitted to real kinetics.")
 
 
